@@ -103,4 +103,33 @@ plt.savefig('Prior beliefs replication.png', dpi=300, bbox_inches='tight')
 plt.show()
 
 
+# Calculate the conditional moments and plot them:
+conditional_moments = calculate_conditional_moments(results['filtered_probabilities'], results)*100
+
+moments_df = pd.DataFrame(conditional_moments[['Conditional_Mean','Conditional_Volatility']])
+
+# Assuming your data has a DateIndex and same length as filtered probabilities
+moments_df.index = data.index
+
+# Plot conditional moments
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+
+# Plot conditional mean
+ax1.plot(moments_df['Conditional_Mean'], 'b-', lw=1.5, label='Conditional Mean')
+ax1.set_title('Time-Varying Conditional Mean')
+ax1.set_ylabel('Mean (%)')
+ax1.grid(True)
+ax1.legend(loc='upper right', frameon=True, framealpha=0.9) 
+
+# Plot conditional volatility
+ax2.plot(moments_df['Conditional_Volatility'], 'r-', lw=1.5, label='Conditional Volatility')
+ax2.set_title('Time-Varying Conditional Volatility')
+ax2.set_xlabel('Time')
+ax2.set_ylabel('Volatility (%)')
+ax2.grid(True)
+ax2.legend(loc='upper right', frameon=True, framealpha=0.9) 
+
+plt.tight_layout()
+plt.savefig('Conditional moments replication.png', dpi=300, bbox_inches='tight')
+plt.show()
 
