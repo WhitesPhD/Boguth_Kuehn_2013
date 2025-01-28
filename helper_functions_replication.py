@@ -20,6 +20,7 @@ import pandas as pd
 
 class JointRegimeSwitchingModel:
     def __init__(self, x1, x2, debug=False):
+        # [Previous initialization code remains the same]
         self.debug = debug
         self.x1 = x1
         self.x2 = x2
@@ -34,45 +35,53 @@ class JointRegimeSwitchingModel:
             print(f"Mean: {self.x1_mean:.6f}, Std: {self.x1_std:.6f}")
             print("Second series (x2):")
             print(f"Mean: {self.x2_mean:.6f}, Std: {self.x2_std:.6f}")
-    
+
     def transform_parameters(self, params):
         """Transform unconstrained parameters to model parameters with improved stability"""
         try:
-            # Means relative to data means
+            # Extract and transform all parameters first
             mu_x1_low = self.x1_mean + params[0] * self.x1_std
             mu_x1_high = self.x1_mean + params[1] * self.x1_std
             mu_x2_low = self.x2_mean + params[2] * self.x2_std
             mu_x2_high = self.x2_mean + params[3] * self.x2_std
             
-            # Variances relative to data variance
+            # Calculate volatilities
             sigma_x1_low = self.x1_std * np.exp(params[4])
             sigma_x1_high = self.x1_std * np.exp(params[5])
             sigma_x2_low = self.x2_std * np.exp(params[6])
             sigma_x2_high = self.x2_std * np.exp(params[7])
             
-            # Transition probabilities with strong persistence
+            # Transition probabilities
             eps = 1e-6
             p_mu_11 = 0.5 + 0.49 * np.tanh(params[8])
             p_mu_22 = 0.5 + 0.49 * np.tanh(params[9])
             p_sigma_11 = 0.5 + 0.49 * np.tanh(params[10])
             p_sigma_22 = 0.5 + 0.49 * np.tanh(params[11])
-            
-            # Ensure high state is actually higher than low state
+                
+            # Now do the swapping if needed
             if mu_x1_high < mu_x1_low:
                 mu_x1_high, mu_x1_low = mu_x1_low, mu_x1_high
-            if mu_x2_high < mu_x2_low:
                 mu_x2_high, mu_x2_low = mu_x2_low, mu_x2_high
+                
             if sigma_x1_high < sigma_x1_low:
                 sigma_x1_high, sigma_x1_low = sigma_x1_low, sigma_x1_high
-            if sigma_x2_high < sigma_x2_low:
                 sigma_x2_high, sigma_x2_low = sigma_x2_low, sigma_x2_high
-            
+                
             # Construct transition matrices
             P_mu = np.array([[p_mu_11, 1-p_mu_11],
                            [1-p_mu_22, p_mu_22]])
             
             P_sigma = np.array([[p_sigma_11, 1-p_sigma_11],
                               [1-p_sigma_22, p_sigma_22]])
+            
+            if self.debug:
+                print("\nTransformed parameters:")
+                print(f"μ_x1: low={mu_x1_low:.6f}, high={mu_x1_high:.6f}")
+                print(f"μ_x2: low={mu_x2_low:.6f}, high={mu_x2_high:.6f}")
+                print(f"σ_x1: low={sigma_x1_low:.6f}, high={sigma_x1_high:.6f}")
+                print(f"σ_x2: low={sigma_x2_low:.6f}, high={sigma_x2_high:.6f}")
+                print(f"P_mu:\n{P_mu}")
+                print(f"P_sigma:\n{P_sigma}")
             
             return (mu_x1_low, mu_x1_high, sigma_x1_low, sigma_x1_high,
                    mu_x2_low, mu_x2_high, sigma_x2_low, sigma_x2_high,
@@ -81,14 +90,15 @@ class JointRegimeSwitchingModel:
         except Exception as e:
             if self.debug:
                 print(f"Parameter transformation error: {str(e)}")
+                print(f"Input parameters: {params}")
             return None
-    
+
     def hamilton_filter(self, params):
-        """Implement Hamilton filter with improved numerical stability"""
+        """Implement Hamilton filter with residual tracking"""
         try:
             param_tuple = self.transform_parameters(params)
             if param_tuple is None:
-                return np.inf, None
+                return np.inf, None, None
                 
             (mu_x1_low, mu_x1_high, sigma_x1_low, sigma_x1_high,
              mu_x2_low, mu_x2_high, sigma_x2_low, sigma_x2_high,
@@ -105,6 +115,10 @@ class JointRegimeSwitchingModel:
             filtered_probs = np.zeros((T, n_states))
             log_likelihood = 0.0
             
+            # Arrays to store residuals
+            residuals_x1 = np.zeros(T)
+            residuals_x2 = np.zeros(T)
+            
             # Pre-compute parameters for each state
             mus_x1 = np.array([mu_x1_low, mu_x1_low, mu_x1_high, mu_x1_high])
             sigmas_x1 = np.array([sigma_x1_low, sigma_x1_high, sigma_x1_low, sigma_x1_high])
@@ -116,6 +130,17 @@ class JointRegimeSwitchingModel:
                     # Standardized innovations for numerical stability
                     z_x1 = (self.x1[t] - mus_x1) / sigmas_x1
                     z_x2 = (self.x2[t] - mus_x2) / sigmas_x2
+                    
+                    # Store residuals using probability-weighted means
+                    if t > 0:  # Use previous probabilities for weights
+                        expected_mu_x1 = np.sum(mus_x1 * filtered_probs[t-1])
+                        expected_mu_x2 = np.sum(mus_x2 * filtered_probs[t-1])
+                    else:  # For first observation, use unconditional means
+                        expected_mu_x1 = np.mean(mus_x1)
+                        expected_mu_x2 = np.mean(mus_x2)
+                    
+                    residuals_x1[t] = self.x1[t] - expected_mu_x1
+                    residuals_x2[t] = self.x2[t] - expected_mu_x2
                     
                     # Log densities with overflow protection
                     log_dens_x1 = -0.5 * np.log(2 * np.pi) - np.log(sigmas_x1) - 0.5 * z_x1**2
@@ -129,24 +154,31 @@ class JointRegimeSwitchingModel:
                         filtered_probs[t] = np.exp(log_joint - log_sum)
                         log_prob_t = logsumexp(log_joint[:, None] + log_P - log_sum, axis=0)
                     else:
-                        return np.inf, None
+                        return np.inf, None, None
                         
                 except Exception as e:
                     if self.debug:
                         print(f"Error at time {t}: {str(e)}")
-                    return np.inf, None
+                    return np.inf, None, None
             
-            return -log_likelihood, filtered_probs
+            # Calculate correlation of residuals
+            residual_corr = np.corrcoef(residuals_x1, residuals_x2)[0,1]
+            
+            return -log_likelihood, filtered_probs, {
+                'residuals_x1': residuals_x1,
+                'residuals_x2': residuals_x2,
+                'correlation': residual_corr
+            }
             
         except Exception as e:
             if self.debug:
                 print(f"Hamilton filter error: {str(e)}")
-            return np.inf, None
-    
+            return np.inf, None, None
+
     def fit(self, initial_params=None):
-        """Fit model with multiple optimization attempts"""
+        """Fit model with residual correlation calculation"""
         if initial_params is None:
-            # Initialize relative to data moments
+            # [Previous initialization code remains the same]
             initial_params = np.array([
                 -0.5,    # μ_x1_low (in std units)
                 0.5,     # μ_x1_high
@@ -162,7 +194,7 @@ class JointRegimeSwitchingModel:
                 2.0      # tanh transform of p_σ_22
             ])
         
-        # Try different optimization methods
+        # [Previous optimization code remains the same]
         methods = ['L-BFGS-B', 'SLSQP', 'trust-constr']
         best_result = None
         best_value = np.inf
@@ -189,8 +221,8 @@ class JointRegimeSwitchingModel:
             print("Warning: All optimization attempts failed")
             return None
             
-        # Compute final values
-        _, filtered_probs = self.hamilton_filter(best_result.x)
+        # Compute final values with residuals
+        _, filtered_probs, residual_info = self.hamilton_filter(best_result.x)
         params = self.transform_parameters(best_result.x)
         
         if params is None:
@@ -210,63 +242,93 @@ class JointRegimeSwitchingModel:
                 'P_sigma': params[9]
             },
             'filtered_probabilities': filtered_probs,
+            'residual_info': residual_info,
             'optimization_result': best_result
         }
-    
-    
 
 
-
-def save_estimates_to_excel(results, filename='model_estimates.xlsx'):
-    # Create a list to store the parameters and their values
-    estimates = []
+def save_results_to_excel(results, filename='regime_switching_results.xlsx'):
+    import pandas as pd
     
-    # Extract parameters
-    params = results['parameters']
-    for param_name, value in params.items():
-        # Handle transition matrices
-        if isinstance(value, np.ndarray):  # For P_mu and P_sigma
-            estimates.append({'Parameter': f'{param_name}[0,0]', 'Value': value[0,0]})
-            estimates.append({'Parameter': f'{param_name}[0,1]', 'Value': value[0,1]})
-            estimates.append({'Parameter': f'{param_name}[1,0]', 'Value': value[1,0]})
-            estimates.append({'Parameter': f'{param_name}[1,1]', 'Value': value[1,1]})
+    # Create lists to store parameters and values
+    params = []
+    
+    # Add all parameters
+    for param_name, value in results['parameters'].items():
+        if isinstance(value, np.ndarray):  # For transition matrices
+            params.append({'Parameter': f'{param_name}[0,0]', 'Value': value[0,0]})
+            params.append({'Parameter': f'{param_name}[0,1]', 'Value': value[0,1]})
+            params.append({'Parameter': f'{param_name}[1,0]', 'Value': value[1,0]})
+            params.append({'Parameter': f'{param_name}[1,1]', 'Value': value[1,1]})
         else:  # For scalar parameters
-            estimates.append({'Parameter': param_name, 'Value': value})
+            params.append({'Parameter': param_name, 'Value': value})
+    
+    # Add residual correlation
+    params.append({'Parameter': 'Residual Correlation', 
+                  'Value': results['residual_info']['correlation']})
     
     # Convert to DataFrame
-    df = pd.DataFrame(estimates)
+    df = pd.DataFrame(params)
     
     # Save to Excel
-    df.to_excel(filename, index=False)
+    with pd.ExcelWriter(filename) as writer:
+        # Save parameters
+        df.to_excel(writer, sheet_name='Parameters', index=False)
+        
+        # Save filtered probabilities in another sheet
+        prob_df = pd.DataFrame(
+            results['filtered_probabilities'],
+            columns=['State1', 'State2', 'State3', 'State4']
+        )
+        prob_df.to_excel(writer, sheet_name='Filtered_Probabilities')
                         
 
 def calculate_conditional_moments(filtered_probs, results):
     # Extract parameters
+    
+    correlation = results['residual_info']['correlation']
     params = results['parameters']
-    mu_low = params['mu_x1_low']
-    mu_high = params['mu_x1_high']
-    sigma_low = params['sigma_x1_low']
-    sigma_high = params['sigma_x1_high']
+    
+    mu_x1_low       = params['mu_x1_low']
+    mu_x1_high      = params['mu_x1_high']
+    sigma_x1_low    = params['sigma_x1_low']
+    sigma_x1_high   = params['sigma_x1_high']
+
+    mu_x2_low       = params['mu_x2_low']
+    mu_x2_high      = params['mu_x2_high']
+    sigma_x2_low    = params['sigma_x2_low']
+    sigma_x2_high   = params['sigma_x2_high']
     
     # Calculate probability of high mean state
     prob_high_mean = filtered_probs[:, 2] + filtered_probs[:, 3]
     prob_high_vol = filtered_probs[:, 1] + filtered_probs[:, 3]
     
     # Calculate conditional mean
-    conditional_mean = prob_high_mean * mu_high + (1 - prob_high_mean) * mu_low
+    conditional_mean_x1  = prob_high_mean * mu_x1_high + (1 - prob_high_mean) * mu_x1_low
     
     # Calculate conditional volatility
-    conditional_sigma = prob_high_vol * sigma_high + (1 - prob_high_vol) * sigma_low
+    conditional_sigma_x1 = prob_high_vol * sigma_x1_high + (1 - prob_high_vol) * sigma_x1_low
+
+    # Calculate conditional mean
+    conditional_mean_x2  = prob_high_mean * mu_x2_high + (1 - prob_high_mean) * mu_x2_low
     
+    # Calculate conditional volatility
+    conditional_sigma_x2 = prob_high_vol * sigma_x2_high + (1 - prob_high_vol) * sigma_x2_low
+
+    conditional_mean   = conditional_mean_x1 -conditional_mean_x2
+    
+    conditional_sigma2 = conditional_sigma_x1**2 + conditional_sigma_x2**2 - 2*correlation*conditional_sigma_x1*conditional_sigma_x2
+
     # Create DataFrame with results
     cond_moments = pd.DataFrame({
         'Conditional_Mean': conditional_mean,
-        'Conditional_Volatility': conditional_sigma,
+        'Conditional_Volatility': np.sqrt(conditional_sigma2),
         'Prob_High_Mean': prob_high_mean,
         'Prob_High_Vol': prob_high_vol
     })
     
     return cond_moments
+
 
 
 
