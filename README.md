@@ -4,6 +4,6 @@ This code replicates the two-state Markov regime switching model proposed by Bog
 
 - **BoguthKuehn2013JF_Data.xlsx** correspond to the data (Consumption non-durable and service) used in the original paper. 
 - **BoguthKuehn2013JF_Beliefs.xlsx** correspond to the prior beliefs (Consumption service and service share) from the original paper. 
-- **ReplicationBoguth.py** provides the main file.
-- **helper_function_replication.py** provides the main routines used to estimate the model and produce charts.
+- **ReplicationBoguth.py** provides the main file (data uploading, estimation, and charts).
+- **helper_function_replication.py** provides the main routines used to estimate the model and save the results.
 
